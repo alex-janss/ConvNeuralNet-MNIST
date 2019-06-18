@@ -3,13 +3,14 @@ import numpy as np
 import numpy.linalg as la
 import matplotlib.pyplot as plt
 from scipy.signal import correlate2d
+from scipy.signal import convolve2d
 
 
 np.set_printoptions(linewidth=300)
 image_size = 28  # width and length
 no_of_different_labels = 10  # i.e. 0, 1, 2, 3, ..., 9
 image_pixels = image_size * image_size
-data_path = "C:/Users/Alex/PycharmProjects/ExperimentBox/"
+data_path = "C:/Users/Alex/PycharmProjects/ConvNeuralNet/"
 # saves train and test data to pickle file
 # makes loading faster for future runs
 try:
@@ -48,6 +49,12 @@ def max_pool(A, nrow = 2, ncol = 2):
 def inverse_pool(A, nrow = 2, ncol = 2):
     return np.kron(A, np.ones((nrow, ncol)) * 1/(nrow*ncol))
 
+
+def pad(A, width):
+    Z = np.zeros((A.shape[0]+2*width,A.shape[1]+2*width))
+    Z[width:A.shape[0]+width,width:A.shape[0]+width] = A
+    return Z
+
 # shuffles a pair of vectors together,
 # i.e. both vectors are shuffled exactly the same way
 def shuffle_together(a, b):
@@ -61,16 +68,17 @@ class CNN:
     def __init__(self, num_filters=3):
         self.num_filters = num_filters
         self.input_layer = np.zeros((28,28))
-        self.filtered_layer = np.zeros((self.num_filters,24,24))
-        self.filtered_z = np.zeros((self.num_filters,24,24))
-        self.pooled_layer = np.zeros((self.num_filters,12,12))
-        self.pooled_z = np.zeros((self.num_filters,12,12))
+        self.padded_input = np.zeros((32,32))
+        self.filtered_layer = np.zeros((self.num_filters,28,28))
+        self.filtered_z = np.zeros((self.num_filters,28,28))
+        self.pooled_layer = np.zeros((self.num_filters,14,14))
+        self.pooled_z = np.zeros((self.num_filters,14,14))
         self.output_layer = np.zeros((10,1))
         self.output_z = np.zeros((10,1))
 
         self.filter = np.zeros((self.num_filters,5,5))
         self.filter_bias = np.zeros(self.num_filters)
-        self.weights = np.zeros((10,12*12*self.num_filters))
+        self.weights = np.zeros((10,self.pooled_layer.size))
         self.biases = np.zeros((10,1))
         self.errors = np.zeros((10,1))
 
@@ -78,7 +86,7 @@ class CNN:
     def random_init(self):
         self.filter = np.random.randn(self.num_filters,5,5)
         self.filter_bias = np.random.randn(self.num_filters)
-        self.weights = np.random.randn(10,12*12*self.num_filters)
+        self.weights = np.random.randn(10,self.pooled_layer.size)
         self.biases = np.random.randn(10,1)
 
     def get_cost(self):
@@ -93,15 +101,16 @@ class CNN:
     def scale_net(self, factor):
         self.filter *= factor
         self.filter_bias *= factor
-        self.weights  *= factor
+        self.weights *= factor
         self.biases *= factor
         return self
 
 
     def classify(self, input_img, input_label):
-        self.input_layer = input_img.reshape(28,28)
+        self.input_layer = np.reshape(input_img, self.input_layer.shape)
+        self.padded_input = pad(self.input_layer,2)
         for i in range(self.num_filters):
-            self.filtered_z[i] = correlate2d(self.input_layer,self.filter[i],mode="valid") + self.filter_bias[i]
+            self.filtered_z[i] = correlate2d(self.padded_input,self.filter[i],mode="valid") + self.filter_bias[i]
         self.filtered_layer = sigmoid(self.filtered_z)
         for i in range(self.num_filters):
             self.pooled_z[i] = max_pool(self.filtered_z[i])
@@ -120,7 +129,7 @@ class CNN:
         # weights L3
         grad_net.weights = np.outer(grad_net.output_layer, self.pooled_layer.reshape(self.pooled_layer.size))
         # errors L2
-        grad_net.pooled_layer = (self.weights.T @ grad_net.output_layer).reshape(self.num_filters,12,12) * deriv_sigmoid(self.pooled_z)
+        grad_net.pooled_layer = np.reshape((self.weights.T @ grad_net.output_layer), self.pooled_layer.shape) * deriv_sigmoid(self.pooled_z)
         # errors L1
         for i in range(self.num_filters):
             grad_net.filtered_layer[i] = inverse_pool(grad_net.pooled_layer[i])
@@ -128,19 +137,19 @@ class CNN:
         grad_net.filter_bias = np.sum(grad_net.filtered_layer, axis=(1,2))
         # filter weights L1
         for i in range(self.num_filters):
-            grad_net.filter[i] = correlate2d(self.input_layer, grad_net.filtered_layer[i], mode="valid")
+            grad_net.filter[i] = correlate2d(self.padded_input, grad_net.filtered_layer[i], mode="valid")
         grad_net.scale_net(-1)
         return grad_net
 
 
-    def train(self, batch_size, learn_rate, epochs=5, init=True):
+    def train(self, batch_size=1, learn_rate=1, epochs=5, init=True):
         if init:
             self.random_init()
         for k in range(epochs):
             shuffle_together(train_imgs, train_labels)
             avg_cost = 0.0
             # divide the training set into (10000/batch_size) batches
-            for i in range(int(10000 / batch_size)):
+            for i in range(10000 // batch_size):
                 # classify a batch of images
                 self.classify(train_imgs[i * batch_size:i * batch_size + batch_size], train_labels[i * batch_size:i * batch_size + batch_size])
                 # calculate the average cost for the batch
@@ -150,7 +159,7 @@ class CNN:
                 self.add_nets(self.backprop().scale_net(learn_rate))
             # average over the number of batches
             avg_cost /= (10000/batch_size)
-            print(avg_cost, "\tepoch", k+1)
+            print('%.5f' % avg_cost, "\tepoch", k+1)
 
 
     def test(self):
