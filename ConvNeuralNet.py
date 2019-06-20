@@ -1,9 +1,9 @@
 import pickle
 import numpy as np
 import numpy.linalg as la
+import scipy.signal as sg
 import matplotlib.pyplot as plt
-from scipy.signal import correlate2d
-from scipy.signal import convolve2d
+
 
 
 np.set_printoptions(linewidth=300)
@@ -43,7 +43,8 @@ def deriv_sigmoid(input_vector):
 
 
 def max_pool(A, nrow = 2, ncol = 2):
-    return A.reshape(A.shape[0] // nrow, nrow, A.shape[1] // ncol, ncol).max(axis=(1,3))
+    return A.reshape(A.shape[0],A.shape[-2] // nrow, nrow, A.shape[-1] // ncol, ncol).max(axis=(-3,-1))
+    # return A.reshape(A.shape[0] // nrow, nrow, A.shape[1] // ncol, ncol).max(axis=(1,3))
 
 
 def inverse_pool(A, nrow = 2, ncol = 2):
@@ -51,8 +52,10 @@ def inverse_pool(A, nrow = 2, ncol = 2):
 
 
 def pad(A, width):
-    Z = np.zeros((A.shape[0]+2*width,A.shape[1]+2*width))
-    Z[width:A.shape[0]+width,width:A.shape[1]+width] = A
+    dim = list(A.shape)
+    dim[-2], dim[-1] = dim[-2]+2*width, dim[-1]+2*width
+    Z = np.zeros(dim)
+    Z[...,width:A.shape[-2]+width,width:A.shape[-1]+width] = A
     return Z
 
 # shuffles a pair of vectors together,
@@ -65,29 +68,30 @@ def shuffle_together(a, b):
 
 class CNN:
 
-    def __init__(self, num_filters=1):
+    def __init__(self, num_filters=3):
         self.num_filters = num_filters
         self.input_layer = np.zeros((28,28))
         self.padded_input = np.zeros((32,32))
-        self.filtered_layer1 = np.zeros((28,28))
-        self.filtered_z1 = np.zeros((28,28))
-        self.pooled_layer1 = np.zeros((14,14))
-        self.pooled_z1 = np.zeros((14,14))
-        self.padded_pool1 = np.zeros((18,18))
-        self.filtered_layer2 = np.zeros((14,14))
-        self.filtered_z2 = np.zeros((14, 14))
-        self.pooled_layer2 = np.zeros((7, 7))
-        self.pooled_z2 = np.zeros((7, 7))
+        self.filtered_layer1 = np.zeros((num_filters,28,28))
+        self.filtered_z1 = np.zeros((num_filters,28,28))
+        self.pooled_layer1 = np.zeros((num_filters,14,14))
+        self.pooled_z1 = np.zeros((num_filters,14,14))
+        self.padded_pool1 = np.zeros((num_filters,18,18))
+        self.filtered_layer2 = np.zeros((num_filters,14,14))
+        self.filtered_z2 = np.zeros((num_filters,14, 14))
+        self.pooled_layer2 = np.zeros((num_filters,7, 7))
+        self.pooled_z2 = np.zeros((num_filters,7, 7))
         self.output_layer = np.zeros((10,1))
         self.output_z = np.zeros((10,1))
 
-        self.filter1 = np.zeros((5,5))
-        self.filter_bias1 = np.zeros(self.num_filters)
-        self.filter2 = np.zeros((5,5))
-        self.filter_bias2 = np.zeros(self.num_filters)
+        self.filter1 = np.zeros((num_filters,5,5))
+        self.filter_bias1 = np.zeros((self.num_filters,1,1))
+        self.filter2 = np.zeros((num_filters,num_filters,5,5))
+        self.filter_bias2 = np.zeros((self.num_filters,1,1))
         self.weights = np.zeros((10,self.pooled_layer2.size))
         self.biases = np.zeros((10,1))
         self.errors = np.zeros((10,1))
+
 
 
     def random_init(self):
@@ -124,19 +128,18 @@ class CNN:
         self.input_layer = np.reshape(input_img, self.input_layer.shape)
         self.padded_input = pad(self.input_layer, 2)
         # filtered layer 1
-        self.filtered_z1 = correlate2d(self.padded_input,self.filter1,mode="valid") + self.filter_bias1
+        self.filtered_z1 = np.array([sg.correlate(self.padded_input,filt,mode="valid") for filt in self.filter1]) + self.filter_bias1
         self.filtered_layer1 = sigmoid(self.filtered_z1)
         # pooling 1
         self.pooled_z1 = max_pool(self.filtered_z1)
         self.pooled_layer1 = sigmoid(self.pooled_z1)
         self.padded_pool1 = pad(self.pooled_layer1, 2)
         # filtered layer 2
-        self.filtered_z2 = correlate2d(self.padded_pool1,self.filter2,mode="valid") + self.filter_bias2
+        self.filtered_z2 = np.reshape(np.array([sg.correlate(self.padded_pool1, filt,mode="valid") for filt in self.filter2]),self.filtered_z2.shape) + self.filter_bias2
         self.filtered_layer2 = sigmoid(self.filtered_z2)
         # pooling 2
         self.pooled_z2 = max_pool(self.filtered_z2)
         self.pooled_layer2 = sigmoid(self.pooled_z2)
-
         # output layer
         self.output_z = (self.weights @ self.pooled_layer2.reshape(self.pooled_layer2.size,1)) + self.biases
         self.output_layer = sigmoid(self.output_z)
@@ -172,7 +175,7 @@ class CNN:
         # errors L3
         grad_net.filtered_layer2 = inverse_pool(grad_net.pooled_layer2)
         # errors L2
-        grad_net.pooled_layer1 = convolve2d(pad(self.filter2, 11), grad_net.filtered_layer2, mode='valid') * deriv_sigmoid(self.pooled_z1)
+        grad_net.pooled_layer1 = np.reshape(np.array([sg.convolve(pad(filt, 11), grad_net.filtered_layer2, mode='valid') for filt in self.filter2]), self.pooled_layer1.shape) * deriv_sigmoid(self.pooled_z1)
         # errors L1
         grad_net.filtered_layer1 = inverse_pool(grad_net.pooled_layer1)
 
@@ -180,17 +183,20 @@ class CNN:
         # weights L5
         grad_net.weights = np.outer(grad_net.output_layer, self.pooled_layer2.reshape(self.pooled_layer2.size))
         # weights L3
-        grad_net.filter2 = correlate2d(self.padded_pool1, grad_net.filtered_layer2, mode='valid')
+        for i in range(grad_net.filtered_layer2.shape[0]):
+            for j in range(self.padded_pool1.shape[0]):
+                grad_net.filter2[i][j] = sg.correlate(self.padded_pool1[j], grad_net.filtered_layer2[i],mode='valid')
         # weights L1
-        grad_net.filter1 = correlate2d(self.padded_input, grad_net.filtered_layer1, mode='valid')
+        for i in range(grad_net.filtered_layer1.shape[0]):
+            grad_net.filter1[i] = sg.correlate(self.padded_input, grad_net.filtered_layer1[i], mode='valid')
 
-        #biases
+        # biases
         # biases L5
         grad_net.biases = grad_net.output_layer
         # bias L3
-        grad_net.filter_bias2 = np.sum(grad_net.filtered_layer2)
+        grad_net.filter_bias2 = np.reshape(np.sum(grad_net.filtered_layer2,axis=(-1,-2)),grad_net.filter_bias2.shape)
         # bias L1
-        grad_net.filter_bias1 = np.sum(grad_net.filtered_layer1)
+        grad_net.filter_bias1 = np.reshape(np.sum(grad_net.filtered_layer1, axis=(-1,-2)),grad_net.filter_bias1.shape)
 
         grad_net.scale_net(-1)
         return grad_net
